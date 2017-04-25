@@ -7,6 +7,10 @@
 
 struct sorted_points {
 	/* you can define this struct to have whatever fields you want. */
+    double x;
+    double y;
+    double length;
+    struct sorted_points* next;
 };
 
 struct sorted_points *
@@ -32,8 +36,18 @@ sp_destroy(struct sorted_points *sp)
 int
 sp_add_point(struct sorted_points *sp, double x, double y)
 {
-	TBD();
-	return 0;
+	//TBD();
+	struct sorted_points *temp;
+	temp = (struct sorted_points *)malloc(sizeof(struct sorted_points));
+	if(temp == NULL)
+	{
+		return 0;
+	}
+	temp->x = x;
+	temp->y = y;
+	
+	
+	return 1;
 }
 
 int
