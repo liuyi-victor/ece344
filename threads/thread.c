@@ -43,10 +43,11 @@ void thread_init(void)
 
 Tid thread_id()
 {
-  //TBD();
-  return run->id;
-  
-    //return THREAD_INVALID;
+  int isenabled = interrupts_set(0);
+  int curr = run->id;
+  interrupts_set(isenabled);
+  return curr;
+  //return run->id;
 }
 
 /* thread_create should create a thread that starts running the function
@@ -57,7 +58,7 @@ Tid thread_id()
  * THREAD_NOMEMORY: no more memory available to create a thread stack. */
 Tid thread_create(void (*fn) (void *), void *parg)
 {
-
+      int isenabled = interrupts_set(0);
       threadblock *temp;
       threadblock *savenext;
       for(temp = exitList;temp != NULL;)
@@ -78,20 +79,32 @@ Tid thread_create(void (*fn) (void *), void *parg)
 
   
   if(count >= THREAD_MAX_THREADS)
+  {
+    interrupts_set(isenabled);                               //always restore signal state to original value before return
     return THREAD_NOMORE;
+  }
   //also need to check for enough stack space
   if(readyList == NULL)
   {
-    tcbList[1].id = 1;
-    tcbList[1].prev = NULL;
-    tcbList[1].next = NULL;
-    getcontext(&(tcbList[1].context));                                    //initialize the ucontext_t structure for the thread
-    tcbList[1].context.uc_mcontext.gregs[REG_RIP] = (long int)thread_stub;
-    tcbList[1].context.uc_mcontext.gregs[REG_RDI] = (long int)fn;
-    tcbList[1].context.uc_mcontext.gregs[REG_RSI] = (long int)parg;
-    tcbList[1].state = ready;
+    int i = 0;
+    for(; i < THREAD_MAX_THREADS; i++)
+    {
+      if(tcbList[i].state != running && tcbList[i].state != ready)
+	break;
+    }
+
+
+    
+    tcbList[i].id = 1;
+    tcbList[i].prev = NULL;
+    tcbList[i].next = NULL;
+    getcontext(&(tcbList[i].context));                                    //initialize the ucontext_t structure for the thread
+    tcbList[i].context.uc_mcontext.gregs[REG_RIP] = (long int)thread_stub;
+    tcbList[i].context.uc_mcontext.gregs[REG_RDI] = (long int)fn;
+    tcbList[i].context.uc_mcontext.gregs[REG_RSI] = (long int)parg;
+    tcbList[i].state = ready;
     void *stackptr = malloc(THREAD_MIN_STACK + 25);
-    tcbList[1].stackpointer = stackptr;
+    tcbList[i].stackpointer = stackptr;
     unsigned long long almost = ((unsigned long long)(stackptr) + THREAD_MIN_STACK);
     int diff = almost%16;
     /*adding 1 because we want %rbp to point to an address that's 16 aligned and when stub function starts it first pushes the old %rbp to the thread's stack. 
@@ -99,16 +112,17 @@ Tid thread_create(void (*fn) (void *), void *parg)
     //initialization of the stack pointer
     if(diff != 0)
     {
-      tcbList[1].context.uc_mcontext.gregs[REG_RSP] = ((16 - diff) + almost) + 8;    //at most adding 16 = 15 + 1 to THREAD_MIN_STACK + base pointer (when diff = 1)
+      tcbList[i].context.uc_mcontext.gregs[REG_RSP] = ((16 - diff) + almost) + 8;    //at most adding 16 = 15 + 1 to THREAD_MIN_STACK + base pointer (when diff = 1)
     }
     else
     {
-      tcbList[1].context.uc_mcontext.gregs[REG_RSP] = almost + 8;                  //+8 for x86-64 system
+      tcbList[i].context.uc_mcontext.gregs[REG_RSP] = almost + 8;                  //+8 for x86-64 system
     }
-    readyList = &tcbList[1];
+    readyList = &tcbList[i];
     readyTail = readyList;
     count = count + 1;
-    return readyList->id;
+    interrupts_set(isenabled);                               //always restore signal state to original value before return
+    return i;    //readyList->id;
   }
   else
   {
@@ -137,6 +151,7 @@ Tid thread_create(void (*fn) (void *), void *parg)
     if(i >= THREAD_MAX_THREADS)
     {
 	count = THREAD_MAX_THREADS;
+	interrupts_set(isenabled);                               //always restore signal state to original value before return
 	return THREAD_NOMORE;
     }
     threadblock *created = &tcbList[i];
@@ -172,10 +187,10 @@ Tid thread_create(void (*fn) (void *), void *parg)
     (created->context).uc_mcontext.gregs[REG_RIP] = (long int)thread_stub;
     (created->context).uc_mcontext.gregs[REG_RDI] = (long int)fn;
     (created->context).uc_mcontext.gregs[REG_RSI] = (long int)parg;
-    //void *stackptr = malloc(THREAD_MIN_STACK + 25);
+    void *stackptr = malloc(THREAD_MIN_STACK + 25);
 
 
-    
+    /*
     struct mallinfo minfo = mallinfo();
     int allocated_space = minfo.uordblks;
     void *stackptr = malloc(THREAD_MIN_STACK + 25);
@@ -185,7 +200,7 @@ Tid thread_create(void (*fn) (void *), void *parg)
       printf("out of memory\n");
 		assert(0);
     }
-    
+    */
 
 
     
@@ -204,13 +219,17 @@ Tid thread_create(void (*fn) (void *), void *parg)
         (created->context).uc_mcontext.gregs[REG_RSP] = almost + 8;
     }
     count = count + 1;
-    return created->id;
+    interrupts_set(isenabled);                               //always restore signal state to original value before return
+    return i;         //created->id;
   }
   //	return THREAD_FAILED;
 }
 
 Tid thread_yield(Tid want_tid)
 {
+      int isenabled = interrupts_set(0);         //disable signals and save the original state
+
+  
 
       threadblock *temp;
       threadblock *savenext;
@@ -233,7 +252,9 @@ Tid thread_yield(Tid want_tid)
   
     if(want_tid == THREAD_SELF || want_tid == run->id)
     {
-      return run->id;
+      int self = run->id;
+      interrupts_set(isenabled);                               //always restore signal state to original value before return
+      return self;
     }
     else if(want_tid == THREAD_ANY)
     {
@@ -247,7 +268,10 @@ Tid thread_yield(Tid want_tid)
 
       
       if(readyList == NULL)
+      {
+	interrupts_set(isenabled);                               //always restore signal state to original value before return
 	return THREAD_NONE;
+      }
       /*
       threadblock *temp;
       threadblock *savenext;
@@ -289,37 +313,41 @@ Tid thread_yield(Tid want_tid)
 	  return next;
       }
       else
-	{
-      //ucontext_t mycontext = {0};
-      bool iscalled = false;
-      //getcontext(&mycontext);
-      getcontext(&(run->context));
-      if(iscalled)
-	return next;
+      {
+	  //ucontext_t mycontext = {0};
+	  bool iscalled = false;
+	  //getcontext(&mycontext);
+	  getcontext(&(run->context));
+	  if(iscalled)
+	  {
+	    interrupts_set(isenabled);                               //always restore signal state to original value before return
+	    return next;
+	  }
 
-      //put the current thread to the end of the ready queue
-      readyTail->next = run;
-      run->prev = readyTail;
-      run->next = NULL;
-      readyTail = run;
-      run->state = ready;
-      readyList->state = running;
+	  //put the current thread to the end of the ready queue
+	  readyTail->next = run;
+	  run->prev = readyTail;
+	  run->next = NULL;
+	  readyTail = run;
+	  run->state = ready;
+	  readyList->state = running;
 
-      //remove the designated thread from the ready queue
-      threadblock *following = readyList->next;          //at least 2 threads in the ready queue since already put the running thread to the end of the ready queue
-      following->prev = NULL;
-      readyList = following;
-      tcbList[next].next = NULL;
-      tcbList[next].prev = NULL;
+	  //remove the designated thread from the ready queue
+	  threadblock *following = readyList->next;          //at least 2 threads in the ready queue since already put the running thread to the end of the ready queue
+	  following->prev = NULL;
+	  readyList = following;
+	  tcbList[next].next = NULL;
+	  tcbList[next].prev = NULL;
       
-      assert(tcbList[next].state == running);
+	  assert(tcbList[next].state == running);
       
-      run = &tcbList[next];
+	  run = &tcbList[next];
       
-      iscalled = true;
-      setcontext(&(tcbList[next].context));
-      return next;
-	}
+	  iscalled = true;
+	  setcontext(&(tcbList[next].context));
+	  interrupts_set(isenabled);                               //always restore signal state to original value before return
+	  return next;
+      }
     }
     else if(want_tid >= 0 && want_tid < THREAD_MAX_THREADS)
     {
@@ -330,7 +358,10 @@ Tid thread_yield(Tid want_tid)
       bool iscalled = false;
       getcontext(&(run->context));
       if(iscalled)
+      {
+	interrupts_set(isenabled);                               //always restore signal state to original value before return
 	return next;
+      }
 
       //first put the current thread to the end of the ready queue and then remove the designated thread from the ready queue
       readyTail->next = run;
@@ -353,18 +384,26 @@ Tid thread_yield(Tid want_tid)
       
       iscalled = true;
       setcontext(&(tcbList[want_tid].context));
+      interrupts_set(isenabled);                               //always restore signal state to original value before return
       return next;
     }
     else
+    {
+      interrupts_set(isenabled);                               //always restore signal state to original value before return
       return THREAD_INVALID;
+    }
     //return THREAD_FAILED;
 }
 
 Tid thread_exit()
 {
   /*select another thread to run from the ready queue and put the current thread to the exit queue*/
+  int isenabled = interrupts_off();
   if(readyList == NULL)
+  {
+    interrupts_set(isenabled);                               //always restore signal state to original value before return
     return THREAD_NONE;
+  }
   /*
   if(exitList == NULL)
   {
@@ -388,8 +427,12 @@ Tid thread_exit()
 
 Tid thread_kill(Tid tid)
 {
+  int isenabled = interrupts_set(0);
   if(tid < 1 || tid >= THREAD_MAX_THREADS || tcbList[tid].state != ready)
+  {
+    interrupts_set(isenabled);                               //always restore signal state to original value before return
     return THREAD_INVALID;
+  }
   if(tcbList[tid].prev == NULL && tcbList[tid].next == NULL)
   {
       readyList = NULL;
@@ -414,13 +457,14 @@ Tid thread_kill(Tid tid)
   tcbList[tid].stackpointer = NULL;
   //tcbList[tid].context = {0};
   count = count - 1;
+  interrupts_set(isenabled);                               //always restore signal state to original value before return
   return tid;
   //return THREAD_FAILED;
 }
 void thread_stub(void (*thread_main)(void *), void *arg)
 {
 	Tid ret;
-
+	interrupts_on();
 	thread_main(arg); // call thread_main() function with arg
 	ret = thread_exit();
 	// we should only get here if we are the last thread. 
