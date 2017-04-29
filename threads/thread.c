@@ -89,13 +89,14 @@ Tid thread_create(void (*fn) (void *), void *parg)
     int i = 0;
     for(; i < THREAD_MAX_THREADS; i++)
     {
-      if(tcbList[i].state != running && tcbList[i].state != ready)
+      //if(tcbList[i].state != running && tcbList[i].state != ready)
+      if(tcbList[i].state == exited)
 	break;
     }
 
 
     
-    tcbList[i].id = 1;
+    tcbList[i].id = i;
     tcbList[i].prev = NULL;
     tcbList[i].next = NULL;
     getcontext(&(tcbList[i].context));                                    //initialize the ucontext_t structure for the thread
@@ -145,7 +146,8 @@ Tid thread_create(void (*fn) (void *), void *parg)
     int i = 0;
     for(; i < THREAD_MAX_THREADS; i++)
     {
-      if(tcbList[i].state != running && tcbList[i].state != ready)
+      //if(tcbList[i].state != running && tcbList[i].state != ready)
+      if(tcbList[i].state == exited)
 	break;
     }
     if(i >= THREAD_MAX_THREADS)
@@ -323,18 +325,25 @@ Tid thread_yield(Tid want_tid)
 	    interrupts_set(isenabled);                               //always restore signal state to original value before return
 	    return next;
 	  }
-
-	  //put the current thread to the end of the ready queue
-	  readyTail->next = run;
-	  run->prev = readyTail;
-	  run->next = NULL;
-	  readyTail = run;
-	  run->state = ready;
-	  readyList->state = running;
+	  if(run->state == running)
+	  {
+	    //put the current thread to the end of the ready queue
+	    readyTail->next = run;
+	    run->prev = readyTail;
+	    run->next = NULL;
+	    readyTail = run;
+	    run->state = ready;
+	  }
 
 	  //remove the designated thread from the ready queue
-	  threadblock *following = readyList->next;          //at least 2 threads in the ready queue since already put the running thread to the end of the ready queue
-	  following->prev = NULL;
+	  //unintr_printf("the value of next thread is %d, and state is %d\n",next,tcbList[next].state);
+	  assert(tcbList[next].state == ready);
+	  readyList->state = running;
+	  threadblock *following = readyList->next;          //(NOT TRUE ANY MORE)at least 2 threads in the ready queue since already put the running thread to the end of the ready queue
+	  if(following != NULL)
+	    following->prev = NULL;
+	  else
+	    readyTail = NULL;
 	  readyList = following;
 	  tcbList[next].next = NULL;
 	  tcbList[next].prev = NULL;
@@ -477,48 +486,147 @@ void thread_stub(void (*thread_main)(void *), void *arg)
  *******************************************************************/
 
 /* This is the wait queue structure */
-struct wait_queue {
+struct wait_queue
+{
 	/* ... Fill this in ... */
+  threadblock *blockedList;
+  threadblock *blockedTail;
 };
 
-struct wait_queue *
-wait_queue_create()
+struct wait_queue *wait_queue_create()
 {
 	struct wait_queue *wq;
 
 	wq = malloc(sizeof(struct wait_queue));
 	assert(wq);
 
-	TBD();
+	//TBD();
+	wq->blockedList = NULL;
+	wq->blockedTail = NULL;
 
 	return wq;
 }
 
-void
-wait_queue_destroy(struct wait_queue *wq)
+void wait_queue_destroy(struct wait_queue *wq)
 {
-	TBD();
+  //TBD();
+  assert(wq->blockedList == NULL);
 	free(wq);
 }
 
-Tid
-thread_sleep(struct wait_queue *queue)
+Tid thread_sleep(struct wait_queue *queue)
 {
-	TBD();
-	return THREAD_FAILED;
+  //thread is currently running
+  //1. put current thread into blocked wait queue
+  //2. choose a ready thread to run
+  int isenabled = interrupts_set(0);
+  if(queue == NULL)
+  {
+      interrupts_set(isenabled);                               //always restore signal state to original value before returninterrupts_set(isenabled);
+      return THREAD_INVALID;
+  }
+  else if(readyList == NULL)
+  {
+    assert(readyTail == NULL);
+      interrupts_set(isenabled);                               //always restore signal state to original value before return
+      return THREAD_NONE;
+  }
+  else
+  {
+      run->state = blocked;
+      if(queue->blockedList == NULL)
+      {
+	  assert(queue->blockedTail == NULL);
+	  queue->blockedList = run;
+	  queue->blockedTail = run;
+      }
+      else
+      {
+	queue->blockedTail->next = run;
+	run->prev = (queue->blockedTail);
+	run->next = NULL;
+	queue->blockedTail = run;
+      }
+      int result = thread_yield(THREAD_ANY);
+      interrupts_set(isenabled);                               //always restore signal state to original value before return
+      return result;
+  }
+  //return THREAD_FAILED;
 }
 
 /* when the 'all' parameter is 1, wakeup all threads waiting in the queue.
  * returns whether a thread was woken up on not. */
-int
-thread_wakeup(struct wait_queue *queue, int all)
+int thread_wakeup(struct wait_queue *queue, int all)
 {
-	TBD();
-	return 0;
+  //TBD();
+  int isenabled = interrupts_off();
+  if(queue == NULL || queue->blockedList == NULL)
+  {
+    interrupts_set(isenabled);
+    return 0;
+  }
+  //if(all == 0)
+  else
+  {
+    threadblock *following = queue->blockedList->next;
+    if(following != NULL)
+      following->prev = NULL;
+    else
+      queue->blockedTail = NULL;
+    queue->blockedList->state = ready;
+    if(readyList == NULL)
+    {
+      readyList = queue->blockedList;
+      readyTail = queue->blockedList;
+      queue->blockedList->prev = NULL;
+      queue->blockedList->next = NULL;
+    }
+    else
+    {
+      readyTail->next = queue->blockedList;
+      queue->blockedList->prev = readyTail;
+      queue->blockedList->next = NULL;
+      readyTail = queue->blockedList;
+    }
+    queue->blockedList = following;
+    if(all == 0)
+    {
+      interrupts_set(isenabled);
+      return 1;
+    }
+    else
+    {
+      int count = 1;
+      //threadblock *following;
+      while(queue->blockedList != NULL)
+      {
+        following = queue->blockedList->next;
+	if(following != NULL)
+	  following->prev = NULL;
+	else
+	  queue->blockedTail = NULL;
+
+	//putting the blocked thread to the end of the ready queue
+	queue->blockedList->state = ready;
+	readyTail->next = queue->blockedList;
+	queue->blockedList->prev = readyTail;
+	queue->blockedList->next = NULL;
+	readyTail = queue->blockedList;
+
+	queue->blockedList = following;        //update the head pointer of blocked List to the next thread
+	count++;
+      }
+      interrupts_set(isenabled);
+      return count;
+    }
+  }
 }
 
-struct lock {
+struct lock
+{
 	/* ... Fill this in ... */
+  int acquired;
+  struct wait_queue queue;
 };
 
 struct lock *
@@ -529,7 +637,10 @@ lock_create()
 	lock = malloc(sizeof(struct lock));
 	assert(lock);
 
-	TBD();
+	lock->acquired = 0;
+	(lock->queue).blockedList = NULL;
+	(lock->queue).blockedTail = NULL;
+	//TBD();
 
 	return lock;
 }
@@ -538,8 +649,10 @@ void
 lock_destroy(struct lock *lock)
 {
 	assert(lock != NULL);
-
-	TBD();
+	assert(!lock->acquired);
+	assert(!(lock->queue).blockedList);
+	assert(!(lock->queue).blockedTail);
+	//TBD();
 
 	free(lock);
 }
@@ -548,20 +661,28 @@ void
 lock_acquire(struct lock *lock)
 {
 	assert(lock != NULL);
-
-	TBD();
+	int isenabled = interrupts_off();
+	while(lock->acquired)
+	  thread_sleep(&(lock->queue));
+	lock->acquired = 1;
+	interrupts_set(isenabled);
+	//TBD();
 }
 
 void
 lock_release(struct lock *lock)
 {
 	assert(lock != NULL);
-
-	TBD();
+	int isenabled = interrupts_off();
+	lock->acquired = 0;
+	thread_wakeup(&(lock->queue), 1);
+	interrupts_set(isenabled);
+	//TBD();
 }
 
 struct cv {
 	/* ... Fill this in ... */
+  struct wait_queue *queue;
 };
 
 struct cv *
@@ -571,8 +692,8 @@ cv_create()
 
 	cv = malloc(sizeof(struct cv));
 	assert(cv);
-
-	TBD();
+	cv->queue = wait_queue_create();
+	//TBD();
 
 	return cv;
 }
@@ -581,8 +702,10 @@ void
 cv_destroy(struct cv *cv)
 {
 	assert(cv != NULL);
-
-	TBD();
+	assert(!cv->queue->blockedList);
+	assert(!cv->queue->blockedTail);
+	wait_queue_destroy(cv->queue);
+	//TBD();
 
 	free(cv);
 }
@@ -592,8 +715,17 @@ cv_wait(struct cv *cv, struct lock *lock)
 {
 	assert(cv != NULL);
 	assert(lock != NULL);
-
-	TBD();
+	int isenabled = interrupts_off();
+	if(!lock->acquired)
+	{
+	    interrupts_set(isenabled);
+	    return;
+	}  
+	lock_release(lock);   //want other threads to make progress if the condition is met/unmet so that current thread can have the chance to run later when condition allows
+	thread_sleep(cv->queue);
+	lock_acquire(lock);
+	interrupts_set(isenabled);
+	//TBD();
 }
 
 void
@@ -601,8 +733,15 @@ cv_signal(struct cv *cv, struct lock *lock)
 {
 	assert(cv != NULL);
 	assert(lock != NULL);
-
-	TBD();
+	int isenabled = interrupts_off();
+        if(!lock->acquired)
+	{
+	    interrupts_set(isenabled);
+	    return;
+	} 
+	thread_wakeup(cv->queue,0);
+	interrupts_set(isenabled);
+	//TBD();
 }
 
 void
@@ -610,6 +749,13 @@ cv_broadcast(struct cv *cv, struct lock *lock)
 {
 	assert(cv != NULL);
 	assert(lock != NULL);
-
-	TBD();
+	int isenabled = interrupts_off();
+        if(!lock->acquired)
+	{
+	    interrupts_set(isenabled);
+	    return;
+	} 
+	thread_wakeup(cv->queue,1);
+	interrupts_set(isenabled);
+	//TBD();
 }
